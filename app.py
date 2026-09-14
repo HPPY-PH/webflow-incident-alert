@@ -9,41 +9,64 @@ SLACK_WEBHOOK = os.getenv('SLACK_WEBHOOK_URL')
 SLACK_TOKEN = os.getenv('SLACK_TOKEN')
 SLACK_CHANNEL = os.getenv('SLACK_CHANNEL', '#test12')
 
-WEBFLOW_STATUS_API = "https://status.webflow.com/api/v2/incidents/unresolved.json"
+# Webflow Statuspage API URLs
+WEBFLOW_SUMMARY_API = "https://status.webflow.com/api/v2/summary.json"
 
-# In-memory store to track already notified incident updates (Incident_ID + Update_ID)
 NOTIFIED_UPDATES = set()
 
-def format_and_send_to_slack(incident):
-    """Helper function to build Slack message and send it."""
+def send_slack_message(slack_message):
+    """Sends a formatted message to Slack via Webhook or Token API."""
+    if SLACK_WEBHOOK:
+        response = requests.post(SLACK_WEBHOOK, json=slack_message)
+        response.raise_for_status()
+        return True
+    elif SLACK_TOKEN:
+        slack_api_message = {
+            "channel": SLACK_CHANNEL,
+            "blocks": slack_message.get("blocks", []),
+            "text": slack_message.get("text", "")
+        }
+        headers = {"Authorization": f"Bearer {SLACK_TOKEN}"}
+        response = requests.post(
+            "https://slack.com/api/chat.postMessage",
+            json=slack_api_message,
+            headers=headers
+        )
+        result = response.json()
+        if not result.get("ok"):
+            raise Exception(f"Slack API error: {result.get('error')}")
+        return True
+    return False
+
+def build_incident_slack_block(incident):
+    """Formats incident payloads for Slack."""
     status = incident.get('status', 'unknown')
     name = incident.get('name', 'Webflow Status Update')
     impact = incident.get('impact', 'unknown')
     
-    # Extract description
     description = incident.get('description')
     if not description:
         incident_updates = incident.get('incident_updates', [])
         description = incident_updates[0].get('body') if incident_updates else 'No description provided'
 
     status_map = {
-        'investigating': ('danger', 'Investigating'),
-        'identified': ('warning', 'Identified'),
-        'monitoring': ('warning', 'Monitoring'),
-        'resolved': ('good', 'Resolved'),
-        'postmortem': ('good', 'Postmortem')
+        'investigating': 'Investigating',
+        'identified': 'Identified',
+        'monitoring': 'Monitoring',
+        'resolved': 'Resolved',
+        'postmortem': 'Postmortem'
     }
     
-    color, display_status = status_map.get(status, ('warning', status))
-    
-    slack_message = {
+    display_status = status_map.get(status, status.title())
+
+    return {
         "text": f"Webflow Incident Alert: {name}",
         "blocks": [
             {
                 "type": "header",
                 "text": {
                     "type": "plain_text",
-                    "text": f"[WEBFLOW] {name}"
+                    "text": f"{name}"
                 }
             },
             {
@@ -71,103 +94,105 @@ def format_and_send_to_slack(incident):
                 "elements": [
                     {
                         "type": "mrkdwn",
-                        "text": f"Updated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')} | <https://status.webflow.com|View Status>"
+                        "text": f"Source: Real-time <https://status.webflow.com|Webflow Status> | Updated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}"
                     }
                 ]
             }
         ]
     }
-    
-    if SLACK_WEBHOOK:
-        response = requests.post(SLACK_WEBHOOK, json=slack_message)
-        response.raise_for_status()
-        return True
-    elif SLACK_TOKEN:
-        slack_api_message = {
-            "channel": SLACK_CHANNEL,
-            "blocks": slack_message.get("blocks", []),
-            "text": slack_message.get("text", "")
-        }
-        headers = {"Authorization": f"Bearer {SLACK_TOKEN}"}
-        response = requests.post(
-            "https://slack.com/api/chat.postMessage",
-            json=slack_api_message,
-            headers=headers
-        )
-        result = response.json()
-        if not result.get("ok"):
-            raise Exception(f"Slack API error: {result.get('error')}")
-        return True
-    return False
 
 @app.route('/', methods=['GET'])
 def index():
-    """Service overview endpoint"""
     return {
         "service": "Webflow Status Monitor",
-        "endpoints": {
-            "health": "/health (GET)",
-            "test_webhook": "/webflow-status (POST)",
-            "fetch_status": "/fetch-status (GET/POST)"
-        }
+        "status": "operational",
+        "endpoints": ["/health", "/webflow-status", "/fetch-status"]
     }, 200
 
 @app.route('/health', methods=['GET'])
 def health():
-    """Health check endpoint for Render/UptimeRobot"""
     return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}, 200
 
 @app.route('/webflow-status', methods=['POST'])
 def webflow_webhook():
-    """Receives manual POST test payloads or direct Webflow Statuspage webhooks"""
+    """Receives POST test payloads or direct Webflow Statuspage webhooks"""
     try:
         data = request.json or {}
         incident = data.get('incident', {})
-        
         if not incident:
-            return {"ok": False, "error": "No incident data provided in payload"}, 400
+            return {"ok": False, "error": "No incident data in request body"}, 400
             
-        format_and_send_to_slack(incident)
+        slack_msg = build_incident_slack_block(incident)
+        send_slack_message(slack_msg)
         return {"ok": True, "message": f"Notification sent to {SLACK_CHANNEL}"}, 200
     except Exception as e:
-        print(f"Error handling webhook: {str(e)}")
         return {"ok": False, "error": str(e)}, 500
 
 @app.route('/fetch-status', methods=['GET', 'POST'])
 def fetch_webflow_status():
-    """Fetches unresolved incidents from Webflow and alerts Slack ONLY on new/updated issues"""
+    """Fetches real live status directly from Webflow Statuspage API"""
     try:
-        response = requests.get(WEBFLOW_STATUS_API, timeout=10)
+        response = requests.get(WEBFLOW_SUMMARY_API, timeout=10)
         response.raise_for_status()
         data = response.json()
         
         incidents = data.get('incidents', [])
+        page_status = data.get('status', {}).get('description', 'All Systems Operational')
         
-        if not incidents:
+        # Scenario 1: Active Incidents Found on Webflow Source
+        if incidents:
+            sent_count = 0
+            for incident in incidents:
+                incident_id = incident.get('id')
+                incident_updates = incident.get('incident_updates', [])
+                latest_update_id = incident_updates[0].get('id') if incident_updates else 'no-update-id'
+                
+                unique_key = f"{incident_id}_{latest_update_id}"
+                
+                if unique_key in NOTIFIED_UPDATES:
+                    continue
+                    
+                slack_msg = build_incident_slack_block(incident)
+                send_slack_message(slack_msg)
+                NOTIFIED_UPDATES.add(unique_key)
+                sent_count += 1
+                
             return {
                 "ok": True, 
-                "message": "All systems operational. No notification sent."
+                "source": "Webflow Status API",
+                "message": f"Fetched live data. Sent {sent_count} incident update(s) to Slack."
             }, 200
 
-        sent_count = 0
-        for incident in incidents:
-            incident_id = incident.get('id')
-            incident_updates = incident.get('incident_updates', [])
-            latest_update_id = incident_updates[0].get('id') if incident_updates else 'no-update-id'
-            
-            unique_key = f"{incident_id}_{latest_update_id}"
-            
-            if unique_key in NOTIFIED_UPDATES:
-                continue
-                
-            format_and_send_to_slack(incident)
-            NOTIFIED_UPDATES.add(unique_key)
-            sent_count += 1
-            
-        return {
-            "ok": True, 
-            "message": f"Processed active incidents. Sent {sent_count} new notification(s)."
-        }, 200
+        # Scenario 2: Webflow is Operational -> Check query parameter to force a summary
+        force_report = request.args.get('force', 'false').lower() == 'true'
+        
+        if force_report:
+            summary_msg = {
+                "text": f"Webflow Status: {page_status}",
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {"type": "plain_text", "text": "[WEBFLOW] Live Status Report"}
+                    },
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": f"*Current Status:* {page_status}\nNo active incidents reported by Webflow."}
+                    },
+                    {
+                        "type": "context",
+                        "elements": [
+                            {
+                                "type": "mrkdwn",
+                                "text": f"Source: <https://status.webflow.com|Webflow Official Status> | {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}"
+                            }
+                        ]
+                    }
+                ]
+            }
+            send_slack_message(summary_msg)
+            return {"ok": True, "message": "Sent live operational summary report to Slack."}, 200
+
+        return {"ok": True, "message": f"Webflow status is '{page_status}'. No incident alert needed."}, 200
 
     except Exception as e:
         print(f"Error fetching status: {str(e)}")
