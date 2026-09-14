@@ -5,9 +5,16 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-SLACK_WEBHOOK = os.getenv('SLACK_WEBHOOK_URL')
+# Single Webhook OR Comma-separated list of Webhooks
+SLACK_WEBHOOK_URLS = os.getenv('SLACK_WEBHOOK_URL', '').split(',')
+
+# Slack Bot Token
 SLACK_TOKEN = os.getenv('SLACK_TOKEN')
-SLACK_CHANNEL = os.getenv('SLACK_CHANNEL', '#franklins-playground')
+
+# Target channels (Defaults to both requested channels)
+SLACK_CHANNELS = [
+    ch.strip() for ch in os.getenv('SLACK_CHANNELS', 'franklins-playground).split(',')
+]
 
 WEBFLOW_SUMMARY_API = "https://status.webflow.com/api/v2/summary.json"
 
@@ -15,31 +22,42 @@ NOTIFIED_UPDATES = set()
 LAST_KNOWN_STATE = "operational"
 
 def send_slack_message(slack_message):
-    """Sends a formatted message to Slack via Webhook or Token API."""
-    if SLACK_WEBHOOK:
-        response = requests.post(SLACK_WEBHOOK, json=slack_message)
-        response.raise_for_status()
-        return True
+    """Sends formatted messages to all configured Slack channels or webhooks."""
+    sent_successfully = False
+
+    # Option A: Send via Webhook URLs (if provided)
+    if any(SLACK_WEBHOOK_URLS):
+        for webhook_url in SLACK_WEBHOOK_URLS:
+            webhook_url = webhook_url.strip()
+            if webhook_url:
+                response = requests.post(webhook_url, json=slack_message)
+                response.raise_for_status()
+                sent_successfully = True
+
+    # Option B: Send via Slack API Bot Token to each channel in SLACK_CHANNELS
     elif SLACK_TOKEN:
-        slack_api_message = {
-            "channel": SLACK_CHANNEL,
-            "blocks": slack_message.get("blocks", []),
-            "text": slack_message.get("text", "")
-        }
         headers = {"Authorization": f"Bearer {SLACK_TOKEN}"}
-        response = requests.post(
-            "https://slack.com/api/chat.postMessage",
-            json=slack_api_message,
-            headers=headers
-        )
-        result = response.json()
-        if not result.get("ok"):
-            raise Exception(f"Slack API error: {result.get('error')}")
-        return True
-    return False
+        for channel in SLACK_CHANNELS:
+            slack_api_message = {
+                "channel": channel,
+                "blocks": slack_message.get("blocks", []),
+                "text": slack_message.get("text", "")
+            }
+            response = requests.post(
+                "https://slack.com/api/chat.postMessage",
+                json=slack_api_message,
+                headers=headers
+            )
+            result = response.json()
+            if not result.get("ok"):
+                print(f"Failed to send to channel {channel}: {result.get('error')}")
+            else:
+                sent_successfully = True
+
+    return sent_successfully
 
 def build_incident_slack_block(incident):
-    """Formats incident payloads matching your exact requested layout."""
+    """Formats incident payloads with @here mention."""
     status = incident.get('status', 'unknown')
     name = incident.get('name', 'Webflow Status Update')
     impact = incident.get('impact', 'unknown')
@@ -109,7 +127,7 @@ def build_incident_slack_block(incident):
     }
 
 def build_operational_slack_block(description="All Systems Operational"):
-    """Formats operational recovery payload matching the layout."""
+    """Formats operational recovery payload."""
     return {
         "text": f"<!here>\n[WEBFLOW] All Systems Operational",
         "blocks": [
@@ -151,6 +169,7 @@ def index():
     return {
         "service": "Webflow Status Monitor",
         "status": "operational",
+        "channels": SLACK_CHANNELS,
         "endpoints": ["/health", "/webflow-status", "/fetch-status"]
     }, 200
 
@@ -168,7 +187,7 @@ def webflow_webhook():
             
         slack_msg = build_incident_slack_block(incident)
         send_slack_message(slack_msg)
-        return {"ok": True, "message": f"Notification sent to {SLACK_CHANNEL}"}, 200
+        return {"ok": True, "message": f"Notification sent to configured channels"}, 200
     except Exception as e:
         return {"ok": False, "error": str(e)}, 500
 
@@ -204,7 +223,7 @@ def fetch_webflow_status():
                 
             return {
                 "ok": True, 
-                "message": f"Active incidents detected. Sent {sent_count} update(s) to Slack."
+                "message": f"Active incidents detected. Sent {sent_count} update(s) to channels."
             }, 200
 
         if LAST_KNOWN_STATE == "incident" or force_report:
@@ -214,7 +233,7 @@ def fetch_webflow_status():
             LAST_KNOWN_STATE = "operational"
             return {
                 "ok": True, 
-                "message": "Webflow restored! Sent 'All Systems Operational' notification to Slack."
+                "message": "Webflow restored! Sent 'All Systems Operational' notification to channels."
             }, 200
 
         return {"ok": True, "message": f"Webflow is normal ({page_status}). No alert sent."}, 200
