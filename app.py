@@ -1,19 +1,21 @@
 import os
 import requests
 from flask import Flask, request
-from datetime import datetime
+from datetime import datetime, timezone
 
 app = Flask(__name__)
 
-# Single Webhook OR Comma-separated list of Webhooks
-SLACK_WEBHOOK_URLS = os.getenv('SLACK_WEBHOOK_URL', '').split(',')
+# Single Webhook OR Comma-separated list of Webhooks (Filters out empty values)
+SLACK_WEBHOOK_URLS = [
+    url.strip() for url in os.getenv('SLACK_WEBHOOK_URL', '').split(',') if url.strip()
+]
 
 # Slack Bot Token
 SLACK_TOKEN = os.getenv('SLACK_TOKEN')
 
-# Target channels (Defaults to both requested channels)
+# Target channels (Defaults to hppy-devteam-phcebu)
 SLACK_CHANNELS = [
-    ch.strip() for ch in os.getenv('SLACK_CHANNELS', 'hppy-devteam-phcebu').split(',')
+    ch.strip() for ch in os.getenv('SLACK_CHANNELS', 'hppy-devteam-phcebu').split(',') if ch.strip()
 ]
 
 WEBFLOW_SUMMARY_API = "https://status.webflow.com/api/v2/summary.json"
@@ -21,18 +23,20 @@ WEBFLOW_SUMMARY_API = "https://status.webflow.com/api/v2/summary.json"
 NOTIFIED_UPDATES = set()
 LAST_KNOWN_STATE = "operational"
 
+def get_utc_now_str():
+    """Helper to format current UTC time."""
+    return datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+
 def send_slack_message(slack_message):
     """Sends formatted messages to all configured Slack channels or webhooks."""
     sent_successfully = False
 
-    # Option A: Send via Webhook URLs (if provided)
-    if any(SLACK_WEBHOOK_URLS):
+    # Option A: Send via Webhook URLs (if explicitly provided)
+    if SLACK_WEBHOOK_URLS:
         for webhook_url in SLACK_WEBHOOK_URLS:
-            webhook_url = webhook_url.strip()
-            if webhook_url:
-                response = requests.post(webhook_url, json=slack_message)
-                response.raise_for_status()
-                sent_successfully = True
+            response = requests.post(webhook_url, json=slack_message)
+            response.raise_for_status()
+            sent_successfully = True
 
     # Option B: Send via Slack API Bot Token to each channel in SLACK_CHANNELS
     elif SLACK_TOKEN:
@@ -119,7 +123,7 @@ def build_incident_slack_block(incident):
                 "elements": [
                     {
                         "type": "mrkdwn",
-                        "text": f"Source: <https://status.webflow.com|Webflow Status> | Updated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}"
+                        "text": f"Source: <https://status.webflow.com|Webflow Status> | Updated: {get_utc_now_str()}"
                     }
                 ]
             }
@@ -157,25 +161,24 @@ def build_operational_slack_block(description="All Systems Operational"):
                 "elements": [
                     {
                         "type": "mrkdwn",
-                        "text": f"Source: <https://status.webflow.com|Webflow Status> | Updated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}"
+                        "text": f"Source: <https://status.webflow.com|Webflow Status> | Updated: {get_utc_now_str()}"
                     }
                 ]
             }
         ]
     }
 
-
-@app.route('/delete-message', methods=['POST', 'GET'])
+@app.route('/delete-message', methods=['GET', 'POST'])
 def delete_message():
-    """Deletes a message sent by the bot using its timestamp (ts) and channel ID."""
-    channel = request.args.get('channel', 'hppy-devteam-phcebu')
-    timestamp = request.args.get('ts')  # e.g., 1726359508.123400
+    """Deletes any message sent by the bot across any configured channel."""
+    channel_id = request.args.get('channel')
+    timestamp = request.args.get('ts')
 
-    if not timestamp:
-        return {"ok": False, "error": "Missing 'ts' query parameter"}, 400
+    if not channel_id or not timestamp:
+        return {"ok": False, "error": "Missing 'channel' or 'ts' parameter"}, 400
 
     headers = {"Authorization": f"Bearer {SLACK_TOKEN}"}
-    payload = {"channel": channel, "ts": timestamp}
+    payload = {"channel": channel_id, "ts": timestamp}
     
     response = requests.post("https://slack.com/api/chat.delete", json=payload, headers=headers)
     return response.json(), response.status_code
@@ -186,12 +189,12 @@ def index():
         "service": "Webflow Status Monitor",
         "status": "operational",
         "channels": SLACK_CHANNELS,
-        "endpoints": ["/health", "/webflow-status", "/fetch-status"]
+        "endpoints": ["/health", "/webflow-status", "/fetch-status", "/delete-message"]
     }, 200
 
 @app.route('/health', methods=['GET'])
 def health():
-    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}, 200
+    return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}, 200
 
 @app.route('/webflow-status', methods=['POST'])
 def webflow_webhook():
@@ -203,7 +206,7 @@ def webflow_webhook():
             
         slack_msg = build_incident_slack_block(incident)
         send_slack_message(slack_msg)
-        return {"ok": True, "message": f"Notification sent to configured channels"}, 200
+        return {"ok": True, "message": "Notification sent to configured channels"}, 200
     except Exception as e:
         return {"ok": False, "error": str(e)}, 500
 
