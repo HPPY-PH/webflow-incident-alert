@@ -1,1 +1,1 @@
-web: gunicorn webflow-alert-app:app
+web: gunicorn app:app
