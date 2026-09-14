@@ -6,6 +6,8 @@ from datetime import datetime
 app = Flask(__name__)
 
 SLACK_WEBHOOK = os.getenv('SLACK_WEBHOOK_URL')
+SLACK_TOKEN = os.getenv('SLACK_TOKEN')
+SLACK_CHANNEL = os.getenv('SLACK_CHANNEL', '#test12')  # Default to test12 for testing
 
 # Health check endpoint for Render
 @app.route('/health', methods=['GET'])
@@ -85,11 +87,30 @@ def webflow_webhook():
             ]
         }
         
-        # Send to Slack if webhook is configured
+        # Send to Slack
         if SLACK_WEBHOOK:
+            # Method 1: Using Incoming Webhook
             response = requests.post(SLACK_WEBHOOK, json=slack_message)
             response.raise_for_status()
-            return {"ok": True, "message": "Notification sent"}, 200
+            return {"ok": True, "message": "Notification sent via webhook"}, 200
+        elif SLACK_TOKEN:
+            # Method 2: Using Web API (supports multiple channels)
+            slack_api_message = {
+                "channel": SLACK_CHANNEL,
+                "blocks": slack_message.get("blocks", []),
+                "text": slack_message.get("text", "")
+            }
+            headers = {"Authorization": f"Bearer {SLACK_TOKEN}"}
+            response = requests.post(
+                "https://slack.com/api/chat.postMessage",
+                json=slack_api_message,
+                headers=headers
+            )
+            result = response.json()
+            if result.get("ok"):
+                return {"ok": True, "message": f"Notification sent to {SLACK_CHANNEL}"}, 200
+            else:
+                raise Exception(f"Slack API error: {result.get('error')}")
         else:
             return {"ok": True, "message": "Received (Slack not configured)"}, 200
             
