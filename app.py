@@ -7,7 +7,7 @@ app = Flask(__name__)
 
 SLACK_WEBHOOK = os.getenv('SLACK_WEBHOOK_URL')
 SLACK_TOKEN = os.getenv('SLACK_TOKEN')
-SLACK_CHANNEL = os.getenv('SLACK_CHANNEL', '#test12')
+SLACK_CHANNEL = os.getenv('SLACK_CHANNEL', '#franklins-playground')
 
 WEBFLOW_SUMMARY_API = "https://status.webflow.com/api/v2/summary.json"
 
