@@ -164,6 +164,22 @@ def build_operational_slack_block(description="All Systems Operational"):
         ]
     }
 
+
+@app.route('/delete-message', methods=['POST', 'GET'])
+def delete_message():
+    """Deletes a message sent by the bot using its timestamp (ts) and channel ID."""
+    channel = request.args.get('channel', 'hppy-devteam-phcebu')
+    timestamp = request.args.get('ts')  # e.g., 1726359508.123400
+
+    if not timestamp:
+        return {"ok": False, "error": "Missing 'ts' query parameter"}, 400
+
+    headers = {"Authorization": f"Bearer {SLACK_TOKEN}"}
+    payload = {"channel": channel, "ts": timestamp}
+    
+    response = requests.post("https://slack.com/api/chat.delete", json=payload, headers=headers)
+    return response.json(), response.status_code
+
 @app.route('/', methods=['GET'])
 def index():
     return {
