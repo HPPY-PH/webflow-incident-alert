@@ -117,7 +117,7 @@ def build_operational_slack_block(description="All Systems Operational"):
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": "<!here> *Attention Active Channel Members*"
+                    "text": "<!here>"
                 }
             },
             {
