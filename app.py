@@ -13,7 +13,7 @@ SLACK_TOKEN = os.getenv('SLACK_TOKEN')
 
 # Target channels (Defaults to both requested channels)
 SLACK_CHANNELS = [
-    ch.strip() for ch in os.getenv('SLACK_CHANNELS', 'franklins-playground).split(',')
+    ch.strip() for ch in os.getenv('SLACK_CHANNELS', 'franklins-playground').split(',')
 ]
 
 WEBFLOW_SUMMARY_API = "https://status.webflow.com/api/v2/summary.json"
