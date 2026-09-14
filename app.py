@@ -1,6 +1,6 @@
 import os
 import requests
-from flask import Flask, request
+from flask import Flask
 from datetime import datetime
 
 app = Flask(__name__)
@@ -10,6 +10,9 @@ SLACK_TOKEN = os.getenv('SLACK_TOKEN')
 SLACK_CHANNEL = os.getenv('SLACK_CHANNEL', '#test12')
 
 WEBFLOW_STATUS_API = "https://status.webflow.com/api/v2/incidents/unresolved.json"
+
+# In-memory store to track already notified incident updates (Incident_ID + Update_ID)
+NOTIFIED_UPDATES = set()
 
 def format_and_send_to_slack(incident):
     """Helper function to build Slack message and send it."""
@@ -32,7 +35,7 @@ def format_and_send_to_slack(incident):
     color, display_status = status_map.get(status, ('warning', status))
     
     slack_message = {
-        "text": "Webflow Status Alert",
+        "text": f"Webflow Incident Alert: {name}",
         "blocks": [
             {
                 "type": "header",
@@ -97,7 +100,7 @@ def format_and_send_to_slack(incident):
 
 @app.route('/fetch-status', methods=['GET', 'POST'])
 def fetch_webflow_status():
-    """Fetches real unresolved incidents from Webflow and posts them to Slack."""
+    """Fetches unresolved incidents from Webflow and sends to Slack ONLY if new/updated issues exist."""
     try:
         response = requests.get(WEBFLOW_STATUS_API, timeout=10)
         response.raise_for_status()
@@ -105,31 +108,36 @@ def fetch_webflow_status():
         
         incidents = data.get('incidents', [])
         
+        # 1. No active incidents on Webflow -> Do nothing and return quietly
         if not incidents:
-            # If Webflow has no active incidents, send a sample system check or clear notification
             return {
                 "ok": True, 
-                "message": "No active incidents found on Webflow status page."
+                "message": "All systems operational. No notification sent."
             }, 200
 
         sent_count = 0
         for incident in incidents:
+            incident_id = incident.get('id')
+            incident_updates = incident.get('incident_updates', [])
+            latest_update_id = incident_updates[0].get('id') if incident_updates else 'no-update-id'
+            
+            # Combine incident ID and update ID to create a unique tracker key
+            unique_key = f"{incident_id}_{latest_update_id}"
+            
+            # 2. Skip if we already posted this exact update to Slack
+            if unique_key in NOTIFIED_UPDATES:
+                continue
+                
+            # 3. Send new incident alert to Slack & record tracker key
             format_and_send_to_slack(incident)
+            NOTIFIED_UPDATES.add(unique_key)
             sent_count += 1
             
         return {
             "ok": True, 
-            "message": f"Successfully fetched and sent {sent_count} active incident(s) to Slack."
+            "message": f"Processed active incidents. Sent {sent_count} new notification(s)."
         }, 200
 
     except Exception as e:
         print(f"Error fetching status: {str(e)}")
         return {"ok": False, "error": str(e)}, 500
-
-@app.route('/health', methods=['GET'])
-def health():
-    return {"status": "healthy"}, 200
-
-if __name__ == '__main__':
-    port = int(os.getenv('PORT', 8000))
-    app.run(host='0.0.0.0', port=port, debug=False)
