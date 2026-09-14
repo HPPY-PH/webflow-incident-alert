@@ -15,7 +15,7 @@ SLACK_TOKEN = os.getenv('SLACK_TOKEN')
 
 # Target channels (Defaults to hppy-devteam-phcebu)
 SLACK_CHANNELS = [
-    ch.strip() for ch in os.getenv('SLACK_CHANNELS', 'hppy-devteam-phcebu').split(',') if ch.strip()
+    ch.strip() for ch in os.getenv('SLACK_CHANNELS', 'hppy-devteam-phcebu,hppy-internal-dev').split(',') if ch.strip()
 ]
 
 WEBFLOW_SUMMARY_API = "https://status.webflow.com/api/v2/summary.json"
