@@ -11,9 +11,8 @@ SLACK_CHANNEL = os.getenv('SLACK_CHANNEL', '#franklins-playground')
 
 WEBFLOW_SUMMARY_API = "https://status.webflow.com/api/v2/summary.json"
 
-# In-memory tracking
 NOTIFIED_UPDATES = set()
-LAST_KNOWN_STATE = "operational"  # Tracks 'operational' vs 'incident'
+LAST_KNOWN_STATE = "operational"
 
 def send_slack_message(slack_message):
     """Sends a formatted message to Slack via Webhook or Token API."""
@@ -40,7 +39,7 @@ def send_slack_message(slack_message):
     return False
 
 def build_incident_slack_block(incident):
-    """Formats incident payloads for Slack."""
+    """Formats incident payloads matching your exact requested layout."""
     status = incident.get('status', 'unknown')
     name = incident.get('name', 'Webflow Status Update')
     impact = incident.get('impact', 'unknown')
@@ -61,13 +60,20 @@ def build_incident_slack_block(incident):
     display_status = status_map.get(status, status.title())
 
     return {
-        "text": f"Webflow Incident Alert: {name}",
+        "text": f"<!here>\n[WEBFLOW] {name}",
         "blocks": [
             {
-                "type": "header",
+                "type": "section",
                 "text": {
-                    "type": "plain_text",
-                    "text": f"[WEBFLOW] {name}" if status != 'resolved' else f"[WEBFLOW RESOLVED] {name}"
+                    "type": "mrkdwn",
+                    "text": "<!here>"
+                }
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"* [WEBFLOW] {name}*"
                 }
             },
             {
@@ -87,7 +93,7 @@ def build_incident_slack_block(incident):
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"_{description}_"
+                    "text": f"{description}"
                 }
             },
             {
@@ -103,22 +109,29 @@ def build_incident_slack_block(incident):
     }
 
 def build_operational_slack_block(description="All Systems Operational"):
-    """Formats the green 'All Operational' alert card."""
+    """Formats operational recovery payload matching the layout."""
     return {
-        "text": f"Webflow Status: {description}",
+        "text": f"<!here>\n[WEBFLOW] All Systems Operational",
         "blocks": [
             {
-                "type": "header",
+                "type": "section",
                 "text": {
-                    "type": "plain_text",
-                    "text": "[WEBFLOW] All Systems Operational"
+                    "type": "mrkdwn",
+                    "text": "<!here> *Attention Active Channel Members*"
                 }
             },
             {
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"*Current Status:* {description}\nWebflow services are running normally and no active incidents are open."
+                    "text": "*[WEBFLOW] All Systems Operational*"
+                }
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Status*\n{description}\n\nWebflow services are running normally and no active incidents are open."
                 }
             },
             {
@@ -126,7 +139,7 @@ def build_operational_slack_block(description="All Systems Operational"):
                 "elements": [
                     {
                         "type": "mrkdwn",
-                        "text": f"Source: <https://status.webflow.com|Webflow Status> | Verified: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}"
+                        "text": f"Source: <https://status.webflow.com|Webflow Status> | Updated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}"
                     }
                 ]
             }
@@ -161,7 +174,6 @@ def webflow_webhook():
 
 @app.route('/fetch-status', methods=['GET', 'POST'])
 def fetch_webflow_status():
-    """Fetches real live status from Webflow and manages outage/recovery alerts."""
     global LAST_KNOWN_STATE
     try:
         response = requests.get(WEBFLOW_SUMMARY_API, timeout=10)
@@ -172,11 +184,8 @@ def fetch_webflow_status():
         page_status = data.get('status', {}).get('description', 'All Systems Operational')
         force_report = request.args.get('force', 'false').lower() == 'true'
 
-        # -------------------------------------------------------------
-        # Scenario 1: Active Incidents Exist
-        # -------------------------------------------------------------
         if incidents:
-            LAST_KNOWN_STATE = "incident"  # Mark system state as impacted
+            LAST_KNOWN_STATE = "incident"
             sent_count = 0
             for incident in incidents:
                 incident_id = incident.get('id')
@@ -198,22 +207,16 @@ def fetch_webflow_status():
                 "message": f"Active incidents detected. Sent {sent_count} update(s) to Slack."
             }, 200
 
-        # -------------------------------------------------------------
-        # Scenario 2: Webflow Recovered / All Systems Operational
-        # -------------------------------------------------------------
         if LAST_KNOWN_STATE == "incident" or force_report:
-            # Send green notification when recovering from an outage OR when force parameter is passed
             slack_msg = build_operational_slack_block(page_status)
             send_slack_message(slack_msg)
             
-            # Reset state back to operational
             LAST_KNOWN_STATE = "operational"
             return {
                 "ok": True, 
                 "message": "Webflow restored! Sent 'All Systems Operational' notification to Slack."
             }, 200
 
-        # Scenario 3: Systems remain normal and were already normal -> Do nothing
         return {"ok": True, "message": f"Webflow is normal ({page_status}). No alert sent."}, 200
 
     except Exception as e:
